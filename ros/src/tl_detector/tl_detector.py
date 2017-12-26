@@ -12,7 +12,11 @@ import cv2
 import yaml
 from math import sqrt
 
-STATE_COUNT_THRESHOLD = 20
+# Since the traffic light classifier takes time to process, we need to
+# lower the threshold a bit
+STATE_COUNT_THRESHOLD = 2
+
+DEBUG = True
 
 class TLDetector(object):
     def __init__(self):
@@ -22,6 +26,29 @@ class TLDetector(object):
         self.waypoints = None
         self.camera_image = None
         self.lights = []
+        self.state = TrafficLight.UNKNOWN
+        self.last_state = TrafficLight.UNKNOWN
+        self.last_wp = -1
+        self.state_count = 0
+
+        self.sight_distance = 300    # Let's say we can only see some distance ahead
+        self.stop_waypoints = []
+
+        self.save_images = False
+        self.image_number = 0
+        self.last_red_time = None
+        self.last_stop_wp = -1
+        self.red_elapsed = 0.0
+        self.last_light = TrafficLight.UNKNOWN
+
+        config_string = rospy.get_param("/traffic_light_config")
+        self.config = yaml.load(config_string)
+
+        self.upcoming_red_light_pub = rospy.Publisher('/traffic_waypoint', Int32, queue_size=1)
+
+        self.bridge = CvBridge()
+        self.light_classifier = TLClassifier()
+        self.listener = tf.TransformListener()
 
         sub1 = rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb)
         sub2 = rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb)
@@ -35,30 +62,6 @@ class TLDetector(object):
         '''
         sub3 = rospy.Subscriber('/vehicle/traffic_lights', TrafficLightArray, self.traffic_cb)
         sub6 = rospy.Subscriber('/image_color', Image, self.image_cb)
-
-        config_string = rospy.get_param("/traffic_light_config")
-        self.config = yaml.load(config_string)
-
-        self.upcoming_red_light_pub = rospy.Publisher('/traffic_waypoint', Int32, queue_size=1)
-
-        self.bridge = CvBridge()
-        self.light_classifier = TLClassifier()
-        self.listener = tf.TransformListener()
-
-        self.state = TrafficLight.UNKNOWN
-        self.last_state = TrafficLight.UNKNOWN
-        self.last_wp = -1
-        self.state_count = 0
-
-        self.sight_distance = 200    # Let's say we can only see some distance ahead
-        self.stop_waypoints = []
-
-        self.save_images = False
-        self.image_number = 0
-        self.last_red_time = None
-        self.last_stop_wp = -1
-        self.red_elapsed = 0.0
-        self.last_light = TrafficLight.UNKNOWN
 
         rospy.spin()
 
@@ -91,7 +94,8 @@ class TLDetector(object):
                     max_dist = dij
                     closest = idx
 
-            rospy.loginfo("ASSOCIATED WP = {} at {}".format(closest, max_dist))
+            if DEBUG:
+                rospy.loginfo("ASSOCIATED WP = {} at {}".format(closest, max_dist))
             self.stop_waypoints.append(closest)
 
     # ========================================================================
@@ -120,11 +124,17 @@ class TLDetector(object):
         if self.state != state:
             self.state_count = 0
             self.state = state
+
         elif self.state_count >= STATE_COUNT_THRESHOLD:
             self.last_state = self.state
             light_wp = light_wp if state == TrafficLight.RED else -1
             self.last_wp = light_wp
             self.upcoming_red_light_pub.publish(Int32(light_wp))
+
+            if DEBUG and state < 3:
+                tl_colors = ['RED', 'YELLOW', 'GREEN', 'UNKNOWN', 'UNKNOWN']
+                rospy.loginfo("TL DETECTED: {} COLOR = {}".format(state, tl_colors[state]))
+
         else:
             self.upcoming_red_light_pub.publish(Int32(self.last_wp))
         self.state_count += 1
@@ -253,29 +263,27 @@ class TLDetector(object):
 
         state = self.get_light_state(self.lights[light_idx])
 
-        # ========================================================================
-        # Update last red time if we are at a new light
-        if stop_wp != self.last_stop_wp:
-            state = TrafficLight.RED
-            self.last_red_time = rospy.get_time()
-            new_signal = True
-        else:
-            state = self.last_light
-
-        # Check if we are continuing from red or just started
-        if self.last_light == TrafficLight.RED:
-            # Continuing from red
-            self.red_elapsed = rospy.get_time() - self.last_red_time
-
-            # Turn green if we have stayed on red long enough
-            if self.red_elapsed > 15.0:
-                state = TrafficLight.GREEN
-
-        else:
-            # Just started red
-            self.last_red_time = rospy.get_time()
-
-        rospy.loginfo("STATE: {} ELAPSED = {}".format(state, self.red_elapsed))
+        ### ========================================================================
+        ### Update last red time if we are at a new light
+        ##if stop_wp != self.last_stop_wp:
+        ##    state = TrafficLight.RED
+        ##    self.last_red_time = rospy.get_time()
+        ##    new_signal = True
+        ##else:
+        ##    state = self.last_light
+        ##
+        ### Check if we are continuing from red or just started
+        ##if self.last_light == TrafficLight.RED:
+        ##    # Continuing from red
+        ##    self.red_elapsed = rospy.get_time() - self.last_red_time
+        ##
+        ##    # Turn green if we have stayed on red long enough
+        ##    if self.red_elapsed > 15.0:
+        ##        state = TrafficLight.GREEN
+        ##
+        ##else:
+        ##    # Just started red
+        ##    self.last_red_time = rospy.get_time()
 
         self.last_light = state
         self.last_stop_wp = stop_wp

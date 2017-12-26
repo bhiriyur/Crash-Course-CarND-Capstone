@@ -9,16 +9,12 @@ import math
 
 '''
 This node will publish waypoints from the car's current position to some `x` distance ahead.
-
 As mentioned in the doc, you should ideally first implement a version which does not care
 about traffic lights or obstacles.
-
 Once you have created dbw_node, you will update this node to use the status of traffic lights too.
-
 Please note that our simulator also provides the exact location of traffic lights and their
 current status in `/vehicle/traffic_lights` message. You can use this message to build this node
 as well as to verify your TL classifier.
-
 TODO (for Yousuf and Aaron): Stopline location for each traffic light.
 '''
 
@@ -40,7 +36,7 @@ class WaypointUpdater(object):
         self.wp_last      = None        # List of waypoints publishes last time (to limit search)
         self.wp_num       = 0           # Number of base waypoints
         self.max_vel      = 17.8        # Maximum speed on the track [meters/sec] (40 Mph)
-        self.stop_dist    = 100         # Stopping distance (from max_vel to 0)
+        self.stop_dist    = 100.0       # Stopping distance (from max_vel to 0)
 
         rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb)
         rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb)
@@ -69,6 +65,13 @@ class WaypointUpdater(object):
     # ============================================================
     def waypoints_cb(self, wp):
         # Callback for base waypoints. Let's just store in class
+
+        # Set the maximum velocity for track based on receommended
+        # speed from waypoint loader. Will automatically reset to
+        # 10 mph for chuchlots site
+        self.max_val = wp.waypoints[0].twist.twist.linear.x
+        rospy.loginfo("Maximum track speed set to {}".format(self.max_vel))
+
         self.base_wp = wp.waypoints
         self.wp_num = len(wp.waypoints)
         self.set_max_vel()
@@ -105,9 +108,17 @@ class WaypointUpdater(object):
 
             dij = math.sqrt( (xi-xj)**2 + (yi-yj)**2 + (zi-zj)**2 )
 
-            ramp_vel = self.max_vel*dij/self.stop_dist
+            if n > 1:
+                ramp_vel = self.max_vel * min(dij/self.stop_dist, 1.0)
+            else:
+                ramp_vel = 0.0
 
-            self.wp_vels[stop-n] = min(self.max_vel, ramp_vel)
+            # Set velocity behind the stop line to ramp velocity
+            self.wp_vels[stop - n] = ramp_vel
+
+            # Set velocity ahead of stop line to 0 (in case car creeps forward)
+            if stop + n - 1 < self.wp_num - 1:
+                self.wp_vels[stop + n - 1] = 0.0
 
             # If far enough away, stop ramping up
             if dij > self.stop_dist:
